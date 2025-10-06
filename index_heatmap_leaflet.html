@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Global Temperature Anomalies — Heatmap + Leaflet</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root{
+      --bg:#0b0c10;/* dark slate */
+      --panel:#13151b;/* deep panel */
+      --ink:#e6e6e6;/* light text */
+      --muted:#9aa0a6;
+      --accent:#8ab4f8;
+      --grid:#222633;
+      --chip:#1e2230;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:var(--bg); color:var(--ink)}
+    header{padding:16px 20px;border-bottom:1px solid #141823; background:linear-gradient(180deg,#0e1117,#0b0c10)}
+    h1{margin:0;font-size:20px;font-weight:700;letter-spacing:.2px}
+    .meta{font-size:12px;color:var(--muted);margin-top:6px}
+
+    .wrap{display:grid;grid-template-columns: 1.15fr .85fr;gap:14px;padding:14px}
+    @media (max-width: 1000px){.wrap{grid-template-columns:1fr;}}
+
+    .card{background:var(--panel);border:1px solid #1c2333;border-radius:14px; padding:14px; box-shadow:0 8px 26px rgba(0,0,0,.25)}
+    .card h2{margin:0 0 10px 0;font-size:16px}
+    .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0 14px}
+    .controls .chip{background:var(--chip);border:1px solid #2b3347;border-radius:999px;padding:8px 10px;display:flex;gap:8px;align-items:center}
+    .controls label{font-size:12px;color:var(--muted)}
+    .controls select, .controls input[type="range"]{accent-color:var(--accent)}
+    .controls select{background:var(--chip);color:var(--ink);border:1px solid #2b3347;border-radius:8px;padding:6px 10px}
+    .controls input[type="range"]{width:200px}
+
+    .canvasWrap{position:relative;border-radius:12px;overflow:hidden;border:1px solid #232a3d;background:linear-gradient(180deg,#0f1421,#0c1018)}
+    canvas#heat{display:block;width:100%;height:380px}
+
+    .axis{font-size:11px;color:#b8c1d1}
+    .axis.x{display:flex;gap:2px;flex-wrap:wrap;margin-top:6px}
+    .axis.x span{width:calc(100%/20 - 2px); text-align:center; opacity:.6}
+    .axis.y{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+
+    .legend{display:flex;align-items:center;gap:8px;margin-top:10px}
+    .legendBar{height:10px;flex:1;border-radius:6px;border:1px solid #2b3347;background:linear-gradient(90deg,#273c75,#4863ac,#7aa2d6,#d1e4ff,#ffe7ce,#fcb07e,#f77f64,#d94841)}
+    .legend .ticks{display:flex;justify-content:space-between;font-size:11px;color:#b8c1d1}
+
+    .tooltip{position:absolute;pointer-events:none;background:#0e1220;border:1px solid #2b3347;color:#dbe5ff;padding:8px 10px;border-radius:10px;font-size:12px;transform:translate(-50%, -115%);opacity:0; transition:opacity .08s}
+
+    .map{height:520px;border-radius:12px;overflow:hidden;border:1px solid #232a3d}
+    .leaflet-control-container .leaflet-top.leaflet-left{top:70px}
+    .pill{font-size:11px;background:#101524;border:1px solid #2b3347;padding:6px 8px;border-radius:999px;color:#c9d6ff}
+
+    .footer{padding:10px 14px;color:#90a0b8;font-size:12px}
+    .btnRow{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{background:#121a2b;border:1px solid #2b3347;color:#dbe5ff;padding:8px 10px;border-radius:10px;font-size:12px;cursor:pointer}
+    .btn:hover{border-color:#3b4670}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Global Temperature Anomalies — Heatmap (Year × Source)</h1>
+    <div class="meta">Data: GCAG & GISTEMP combined — values in °C anomaly relative to baselines. File: <code>flat-ui__data-Mon Oct 06 2025.json</code></div>
+  </header>
+
+  <div class="wrap">
+    <!-- HEATMAP PANEL -->
+    <section class="card">
+      <h2>Heatmap</h2>
+      <div class="controls">
+        <div class="chip">
+          <label for="sourceMode">Source</label>
+          <select id="sourceMode">
+            <option value="avg">Average (GCAG & GISTEMP)</option>
+            <option value="gcag">GCAG only</option>
+            <option value="GISTEMP">GISTEMP only</option>
+          </select>
+        </div>
+        <div class="chip">
+          <label for="yearSlider">Year</label>
+          <input type="range" id="yearSlider" min="1880" max="2024" step="1"/>
+          <span id="yearVal" class="pill">—</span>
+        </div>
+        <button class="btn" id="downloadPng">Download heatmap PNG</button>
+      </div>
+
+      <div class="canvasWrap">
+        <canvas id="heat" width="1200" height="380" aria-label="Heatmap of annual anomalies"></canvas>
+        <div id="tip" class="tooltip"></div>
+      </div>
+      <div class="legend">
+        <div class="legendBar" id="legendBar"></div>
+      </div>
+      <div class="ticks">
+        <div class="ticks legend ticks"><span class="axis">Cooler</span><span style="flex:1"></span><span class="axis">Hotter</span></div>
+      </div>
+    </section>
+
+    <!-- MAP PANEL -->
+    <section class="card">
+      <h2>Leaflet Map (Global tint by selected year's anomaly)</h2>
+      <div class="controls">
+        <span class="pill">Selected: <span id="selDesc">—</span></span>
+      </div>
+      <div id="map" class="map"></div>
+      <div class="legend" style="margin-top:12px">
+        <div class="legendBar"></div>
+      </div>
+      <div class="ticks legend ticks"><span class="axis">Cooler</span><span style="flex:1"></span><span class="axis">Hotter</span></div>
+    </section>
+  </div>
+
+  <div class="footer">
+    Pro tip: hover a cell to preview that year on the map. Drag the slider to scrub years. Use Source = Average for a blended estimate.
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // === CONFIG ===
+    const DATA_FILE = 'flat-ui__data-Mon Oct 06 2025.json'; // Place this file next to index.html
+
+    // Heatmap layout sizes
+    const PADDING_X = 16;  // left/right padding inside canvas
+    const PADDING_Y = 16;  // top/bottom padding inside canvas
+    const ROW_GAP = 6;     // gap between source rows
+    const COL_GAP = 1;     // gap between year columns
+
+    // Globals
+    let raw = [];
+    let years = [];
+    let sources = [];
+    let byYear = new Map();
+    let minVal = Infinity, maxVal = -Infinity;
+
+    // DOM
+    const canvas = document.getElementById('heat');
+    const ctx = canvas.getContext('2d');
+    const tip = document.getElementById('tip');
+    const sourceModeEl = document.getElementById('sourceMode');
+    const slider = document.getElementById('yearSlider');
+    const yearVal = document.getElementById('yearVal');
+    const selDesc = document.getElementById('selDesc');
+    const dlBtn = document.getElementById('downloadPng');
+
+    // Leaflet map init
+    const map = L.map('map', { zoomControl: true, worldCopyJump: true })
+      .setView([20, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 6, minZoom: 2, attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const overlay = L.rectangle([[-85,-180],[85,180]], {
+      stroke:false, fill:true, fillOpacity:0.35
+    }).addTo(map);
+
+    function lerp(a,b,t){return a+(b-a)*t}
+    function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+
+    // Diverging color scale: blue -> white -> red
+    // Based roughly on coolwarm; maps [-range, +range] across gradient
+    function anomalyColor(v){
+      const t = (v - minVal) / (maxVal - minVal); // 0..1
+      // Build gradient with piecewise interpolation
+      // Stops: 0:#273c75, 0.2:#4863ac, 0.4:#7aa2d6, 0.6:#ffe7ce, 0.75:#fcb07e, 0.9:#f77f64, 1:#d94841
+      const stops = [
+        {t:0.00, c:[39,60,117]},
+        {t:0.20, c:[72,99,172]},
+        {t:0.40, c:[122,162,214]},
+        {t:0.60, c:[255,231,206]},
+        {t:0.75, c:[252,176,126]},
+        {t:0.90, c:[247,127,100]},
+        {t:1.00, c:[217,72,65]},
+      ];
+      const tt = clamp(t,0,1);
+      let i = 0; while(i < stops.length-1 && tt > stops[i+1].t) i++;
+      const a = stops[i], b = stops[i+1];
+      const k = (tt - a.t) / (b.t - a.t);
+      const r = Math.round(lerp(a.c[0], b.c[0], k));
+      const g = Math.round(lerp(a.c[1], b.c[1], k));
+      const bl = Math.round(lerp(a.c[2], b.c[2], k));
+      return `rgb(${r},${g},${bl})`;
+    }
+
+    function computeStats(){
+      minVal = Infinity; maxVal = -Infinity;
+      raw.forEach(r=>{ if (isFinite(r.Mean)) { minVal = Math.min(minVal, r.Mean); maxVal = Math.max(maxVal, r.Mean); } });
+      // small padding for visual contrast
+      const pad = 0.05 * (maxVal - minVal);
+      minVal -= pad; maxVal += pad;
+    }
+
+    function aggregate(){
+      byYear.clear();
+      raw.forEach(r => {
+        if(!byYear.has(r.Year)) byYear.set(r.Year,{});
+        byYear.get(r.Year)[r.Source] = r.Mean;
+      });
+      years = Array.from(byYear.keys()).sort((a,b)=>a-b);
+      sources = Array.from(new Set(raw.map(r=>r.Source)));
+    }
+
+    function currentValue(year){
+      const mode = sourceModeEl.value; const rec = byYear.get(year) || {};
+      if(mode === 'avg'){
+        const vals = sources.map(s=>rec[s]).filter(v=>Number.isFinite(v));
+        if(!vals.length) return NaN; return vals.reduce((a,b)=>a+b,0)/vals.length;
+      }
+      return rec[mode];
+    }
+
+    function drawHeatmap(){
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0,0,W,H);
+      const nRows = sources.length; // typically 2 rows
+      const nCols = years.length;
+
+      const gridH = H - 2*PADDING_Y - (nRows-1)*ROW_GAP;
+      const cellH = gridH / nRows;
+      const gridW = W - 2*PADDING_X - (nCols-1)*COL_GAP;
+      const cellW = gridW / nCols;
+
+      ctx.imageSmoothingEnabled = false;
+
+      years.forEach((year, col) => {
+        sources.forEach((src, row) => {
+          const v = (byYear.get(year)||{})[src];
+          const x = PADDING_X + col*(cellW+COL_GAP);
+          const y = PADDING_Y + row*(cellH+ROW_GAP);
+          ctx.fillStyle = Number.isFinite(v) ? anomalyColor(v) : '#333a4f';
+          ctx.fillRect(x,y,cellW,cellH);
+        });
+      });
+
+      // grid lines (subtle)
+      ctx.strokeStyle = '#1a2030';
+      ctx.lineWidth = 1;
+      // outer border
+      ctx.strokeRect(PADDING_X-0.5,PADDING_Y-0.5, gridW + (nCols-1)*COL_GAP +1, gridH + (nRows-1)*ROW_GAP +1);
+    }
+
+    function drawAxes(){
+      // Simple x ticks every ~20 columns using an overlay div under canvas would be nicer,
+      // but we keep minimal; we update below under the canvas via DOM
+      const xAxis = document.querySelector('.axis.x');
+      if(!xAxis){
+        const div = document.createElement('div');
+        div.className = 'axis x';
+        canvas.parentElement.after(div);
+      }
+    }
+
+    function updateSlider(year){
+      slider.value = year;
+      yearVal.textContent = year;
+      const mode = sourceModeEl.value;
+      const val = currentValue(+year);
+      const valStr = Number.isFinite(val) ? val.toFixed(3) + ' °C' : '—';
+      selDesc.textContent = `${mode === 'avg' ? 'Average' : mode} • ${year} • ${valStr}`;
+      // recolor map overlay
+      overlay.setStyle({fillColor: Number.isFinite(val) ? anomalyColor(val) : '#333a4f'});
+    }
+
+    function handleHover(evt){
+      const rect = canvas.getBoundingClientRect();
+      const x = evt.clientX - rect.left;
+      const y = evt.clientY - rect.top;
+
+      const nRows = sources.length, nCols = years.length;
+      const gridH = canvas.height - 2*PADDING_Y - (nRows-1)*ROW_GAP;
+      const cellH = gridH / nRows;
+      const gridW = canvas.width - 2*PADDING_X - (nCols-1)*COL_GAP;
+      const cellW = gridW / nCols;
+
+      const col = Math.floor((x - PADDING_X) / (cellW + COL_GAP));
+      const row = Math.floor((y - PADDING_Y) / (cellH + ROW_GAP));
+
+      if(col>=0 && col<nCols && row>=0 && row<nRows){
+        const year = years[col];
+        const src = sources[row];
+        const v = (byYear.get(year)||{})[src];
+        if(Number.isFinite(v)){
+          tip.style.opacity = 1;
+          tip.style.left = `${evt.clientX - rect.left}px`;
+          tip.style.top  = `${evt.clientY - rect.top}px`;
+          tip.innerHTML = `<b>${src}</b> — <b>${year}</b><br/>Anomaly: <b>${v.toFixed(3)} °C</b>`;
+          // preview on map
+          overlay.setStyle({fillColor: anomalyColor(v)});
+          selDesc.textContent = `${src} • ${year} • ${v.toFixed(3)} °C`;
+        }
+      } else {
+        tip.style.opacity = 0;
+        // revert to slider-selected value
+        updateSlider(+slider.value);
+      }
+    }
+
+    function downloadPNG(){
+      const link = document.createElement('a');
+      link.download = `heatmap_${sourceModeEl.value}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+
+    async function init(){
+      try{
+        const res = await fetch(DATA_FILE);
+        const data = await res.json();
+        raw = data.filter(d=>d && Number.isFinite(+d.Year) && Number.isFinite(+d.Mean))
+                  .map(d=>({Source:String(d.Source), Year:+d.Year, Mean:+d.Mean}))
+                  .sort((a,b)=>a.Year-b.Year);
+        computeStats();
+        aggregate();
+
+        // Prepare slider range
+        const minYear = Math.min(...years), maxYear = Math.max(...years);
+        slider.min = minYear; slider.max = maxYear; slider.step = 1; slider.value = maxYear;
+        yearVal.textContent = slider.value;
+
+        // Draw once
+        drawHeatmap();
+        drawAxes();
+        updateSlider(+slider.value);
+
+        // Events
+        canvas.addEventListener('mousemove', handleHover);
+        canvas.addEventListener('mouseleave', ()=>{ tip.style.opacity = 0; updateSlider(+slider.value); });
+        sourceModeEl.addEventListener('change', ()=>{ updateSlider(+slider.value); });
+        slider.addEventListener('input', (e)=> updateSlider(+e.target.value));
+        dlBtn.addEventListener('click', downloadPNG);
+
+        // Resize canvas to device pixel ratio for crispness
+        const resize = ()=>{
+          const dpr = window.devicePixelRatio || 1;
+          const rect = canvas.getBoundingClientRect();
+          canvas.width = Math.round(rect.width * dpr);
+          canvas.height = Math.round(380 * dpr);
+          ctx.setTransform(dpr,0,0,dpr,0,0);
+          drawHeatmap();
+          updateSlider(+slider.value);
+        };
+        new ResizeObserver(resize).observe(canvas.parentElement);
+        resize();
+      }catch(err){
+        console.error(err);
+        alert('Failed to load data JSON. Make sure the file is located next to this HTML and named exactly: '+DATA_FILE);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
